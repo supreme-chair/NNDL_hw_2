@@ -462,6 +462,7 @@ function preprocessData() {
 }
 
 // Extract features and labels from data
+// Extract features and labels from data
 function extractFeaturesAndLabels(data, isTraining = true) {
     const featuresArray = [];
     const labelsArray = [];
@@ -470,25 +471,84 @@ function extractFeaturesAndLabels(data, isTraining = true) {
     let medianAge = 0;
     let modeEmbarked = 'S'; // Default to Southampton
     
+    // Важно: используем те же параметры, что и при обучении
+    // Если это тестовые данные, используем уже рассчитанные параметры
     if (isTraining) {
-        // Calculate median age (ignore missing values)
-        const ages = data
-            .filter(row => row.Age && row.Age !== '')
-            .map(row => parseFloat(row.Age))
-            .sort((a, b) => a - b);
+        // Расчет параметров для обучения...
+    }
+    
+    // Для тестовых данных используем уже сохраненные параметры
+    const stats = isTraining ? null : getTestStats(); // Нужно реализовать эту функцию
+    
+    // Process each row
+    data.forEach(row => {
+        const features = [];
         
-        if (ages.length > 0) {
-            const mid = Math.floor(ages.length / 2);
-            medianAge = ages.length % 2 === 0 ? (ages[mid - 1] + ages[mid]) / 2 : ages[mid];
+        // Используем те же параметры, что и при обучении
+        const age = row.Age && row.Age !== '' ? parseFloat(row.Age) : medianAge;
+        const fare = row.Fare && row.Fare !== '' ? parseFloat(row.Fare) : 0;
+        const embarked = row.Embarked && row.Embarked !== '' ? row.Embarked : modeEmbarked;
+        const sex = row.Sex || 'male';
+        const pclass = row.Pclass || '3';
+        
+        // Стандартизация Age и Fare
+        // Для тестовых данных используем те же mean/std, что и при обучении
+        features.push((age - meanAge) / stdAge); // Age (standardized)
+        features.push((fare - meanFare) / stdFare); // Fare (standardized)
+        
+        // One-hot encode Sex: [male, female]
+        features.push(sex === 'female' ? 1 : 0); // Female
+        features.push(sex === 'male' ? 1 : 0);   // Male
+        
+        // One-hot encode Pclass: [1, 2, 3]
+        features.push(pclass === '1' ? 1 : 0); // Pclass 1
+        features.push(pclass === '2' ? 1 : 0); // Pclass 2
+        features.push(pclass === '3' ? 1 : 0); // Pclass 3
+        
+        // One-hot encode Embarked: [C, Q, S]
+        features.push(embarked === 'C' ? 1 : 0); // Cherbourg
+        features.push(embarked === 'Q' ? 1 : 0); // Queenstown
+        features.push(embarked === 'S' ? 1 : 0); // Southampton
+        
+        // SibSp and Parch (raw values)
+        features.push(parseInt(row.SibSp) || 0);
+        features.push(parseInt(row.Parch) || 0);
+        
+        // Optional family features - ВАЖНО: использовать тот же флаг, что и при обучении!
+        if (includeFamilyFeatures) {
+            const familySize = (parseInt(row.SibSp) || 0) + (parseInt(row.Parch) || 0) + 1;
+            features.push(familySize); // FamilySize
+            features.push(familySize === 1 ? 1 : 0); // IsAlone
         }
         
-        // Calculate mode embarked
-        const embarkedCounts = {};
-        data.forEach(row => {
-            if (row.Embarked && row.Embarked !== '') {
-                embarkedCounts[row.Embarked] = (embarkedCounts[row.Embarked] || 0) + 1;
-            }
-        });
+        featuresArray.push(features);
+        
+        // Extract label if this is training data
+        if (isTraining) {
+            labelsArray.push([parseInt(row.Survived) || 0]);
+        }
+    });
+    
+    // Feature names for display
+    const featureNames = [
+        'Age (std)', 'Fare (std)', 
+        'Sex: Female', 'Sex: Male',
+        'Pclass: 1', 'Pclass: 2', 'Pclass: 3',
+        'Embarked: C', 'Embarked: Q', 'Embarked: S',
+        'SibSp', 'Parch'
+    ];
+    
+    if (includeFamilyFeatures) {
+        featureNames.push('FamilySize', 'IsAlone');
+    }
+    
+    return {
+        featuresArray,
+        labelsArray,
+        featureNames,
+        stats: { meanAge, stdAge, meanFare, stdFare, medianAge, modeEmbarked }
+    };
+}
         
         let maxCount = 0;
         for (const [key, count] of Object.entries(embarkedCounts)) {
@@ -959,6 +1019,7 @@ function updateThreshold() {
 }
 
 // Predict on test data
+// Predict on test data
 async function predictTestData() {
     if (!model) {
         updateStatus(elements.predictionStatus, 'Model not trained', 'error');
@@ -973,13 +1034,33 @@ async function predictTestData() {
     updateStatus(elements.predictionStatus, 'Generating predictions...', 'loading');
     
     try {
-        // Extract features from test data (no labels)
+        // Важно: используем те же настройки, что и при обучении!
+        // Extract features from test data (no labels), но с теми же параметрами
         const { featuresArray } = extractFeaturesAndLabels(testData, false);
         
-        // Convert to tensor
-        testFeatures = tf.tensor2d(featuresArray);
+        // Проверяем размерность признаков
+        console.log('Feature dimensions:', featuresArray[0]?.length, 'Expected:', featureNames.length);
         
-        // Generate predictions
+        // Если размерности не совпадают, возможно includeFamilyFeatures изменился
+        if (featuresArray[0] && featuresArray[0].length !== featureNames.length) {
+            console.warn(`Feature dimension mismatch: ${featuresArray[0].length} vs ${featureNames.length}`);
+            console.warn('Model was trained with', featureNames.length, 'features');
+            console.warn('Test data has', featuresArray[0].length, 'features');
+            
+            // Можно попробовать исправить, переключив флаг обратно
+            includeFamilyFeatures = !includeFamilyFeatures;
+            elements.toggleFeaturesBtn.textContent = `Toggle Family Features (${includeFamilyFeatures ? 'On' : 'Off'})`;
+            elements.toggleFeaturesBtn.classList.toggle('success', includeFamilyFeatures);
+            
+            // Переизвлекаем признаки
+            const result = extractFeaturesAndLabels(testData, false);
+            testFeatures = tf.tensor2d(result.featuresArray);
+        } else {
+            // Convert to tensor
+            testFeatures = tf.tensor2d(featuresArray);
+        }
+        
+        // Генерируем предсказания
         const predictions = await model.predict(testFeatures).data();
         testPredictions = Array.from(predictions);
         
@@ -993,10 +1074,17 @@ async function predictTestData() {
         
     } catch (error) {
         console.error('Error generating predictions:', error);
-        updateStatus(elements.predictionStatus, `Prediction error: ${error.message}`, 'error');
+        
+        // Более подробное сообщение об ошибке
+        if (error.message.includes('expected') && error.message.includes('shape')) {
+            updateStatus(elements.predictionStatus, 
+                `Dimension mismatch error: Model expects ${featureNames.length} features. Make sure preprocessing settings are the same as during training.`, 
+                'error');
+        } else {
+            updateStatus(elements.predictionStatus, `Prediction error: ${error.message}`, 'error');
+        }
     }
 }
-
 // Display predictions
 function displayPredictions() {
     if (!testData || !testPredictions) return;
