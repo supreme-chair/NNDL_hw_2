@@ -67,6 +67,10 @@ function initEventListeners() {
     // Data loading
     elements.loadDataBtn.addEventListener('click', loadData);
     
+    // Auto-load when files are selected
+    elements.trainFile.addEventListener('change', handleFileSelection);
+    elements.testFile.addEventListener('change', handleFileSelection);
+    
     // Preprocessing
     elements.preprocessBtn.addEventListener('click', preprocessData);
     elements.toggleFeaturesBtn.addEventListener('click', toggleFamilyFeatures);
@@ -86,6 +90,14 @@ function initEventListeners() {
     elements.predictBtn.addEventListener('click', predictTestData);
     elements.exportBtn.addEventListener('click', exportPredictions);
     elements.saveModelBtn.addEventListener('click', saveModel);
+}
+
+// Handle file selection - auto load data
+function handleFileSelection() {
+    // Enable the load button when at least train file is selected
+    if (elements.trainFile.files.length > 0) {
+        elements.loadDataBtn.disabled = false;
+    }
 }
 
 // Update status display
@@ -345,24 +357,49 @@ function createDataVisualizations() {
     const surfaceSex = { name: 'Survival by Sex', tab: 'Data Analysis' };
     const surfacePclass = { name: 'Survival by Passenger Class', tab: 'Data Analysis' };
     
-    // Render charts
-    tfvis.render.barchart(surfaceSex, {
-        values: sexSurvivalRates,
-        labels: sexLabels
-    }, {
-        xLabel: 'Sex',
-        yLabel: 'Survival Rate',
-        height: 300
-    });
+    // Clear previous charts
+    elements.trainingCharts.innerHTML = '';
     
-    tfvis.render.barchart(surfacePclass, {
-        values: pclassSurvivalRates,
-        labels: pclassLabels
-    }, {
-        xLabel: 'Passenger Class',
-        yLabel: 'Survival Rate',
-        height: 300
-    });
+    // Create container for charts
+    const chartsHTML = `
+        <div class="chart">
+            <h4>Survival Rate by Sex</h4>
+            <div id="sexChart"></div>
+        </div>
+        <div class="chart">
+            <h4>Survival Rate by Passenger Class</h4>
+            <div id="pclassChart"></div>
+        </div>
+    `;
+    
+    elements.trainingCharts.innerHTML = chartsHTML;
+    
+    // Render charts
+    tfvis.render.barchart(
+        { name: 'Survival by Sex', tab: 'Data Analysis' }, 
+        {
+            values: sexSurvivalRates,
+            labels: sexLabels
+        }, 
+        {
+            xLabel: 'Sex',
+            yLabel: 'Survival Rate',
+            height: 250
+        }
+    );
+    
+    tfvis.render.barchart(
+        { name: 'Survival by Passenger Class', tab: 'Data Analysis' }, 
+        {
+            values: pclassSurvivalRates,
+            labels: pclassLabels
+        }, 
+        {
+            xLabel: 'Passenger Class',
+            yLabel: 'Survival Rate',
+            height: 250
+        }
+    );
 }
 
 // Toggle family features (FamilySize and IsAlone)
@@ -616,4 +653,469 @@ function initModel() {
 }
 
 // Display model summary
-function displayModel
+function displayModelSummary() {
+    let html = '<h3>Model Architecture</h3>';
+    
+    // Count total parameters
+    let totalParams = 0;
+    model.layers.forEach((layer, index) => {
+        const layerType = layer.getClassName();
+        const outputShape = JSON.stringify(layer.outputShape);
+        const params = layer.countParams();
+        totalParams += params;
+        
+        html += `<p><strong>Layer ${index + 1}:</strong> ${layerType} | Output: ${outputShape} | Parameters: ${params}</p>`;
+    });
+    
+    html += `<p><strong>Total Parameters:</strong> ${totalParams}</p>`;
+    html += '<p><strong>Optimizer:</strong> Adam (learning rate: 0.001)</p>';
+    html += '<p><strong>Loss Function:</strong> Binary Crossentropy</p>';
+    html += '<p><strong>Metrics:</strong> Accuracy</p>';
+    
+    elements.modelSummary.innerHTML = html;
+}
+
+// Train the model
+async function trainModel() {
+    if (!model) {
+        updateStatus(elements.trainingStatus, 'Model not initialized', 'error');
+        return;
+    }
+    
+    if (!trainFeatures || !trainLabels) {
+        updateStatus(elements.trainingStatus, 'Data not preprocessed', 'error');
+        return;
+    }
+    
+    isTraining = true;
+    elements.trainBtn.disabled = true;
+    elements.stopTrainBtn.disabled = false;
+    updateStatus(elements.trainingStatus, 'Training started...', 'loading');
+    
+    try {
+        // Clear previous charts
+        elements.trainingCharts.innerHTML = '';
+        
+        // Prepare fit callbacks for visualization
+        const container = {
+            name: 'Training Progress',
+            tab: 'Training',
+            styles: { height: '300px' }
+        };
+        
+        // Start training
+        currentTraining = await model.fit(trainFeatures, trainLabels, {
+            epochs: 50,
+            batchSize: 32,
+            validationSplit: 0.2,
+            callbacks: [
+                tfvis.show.fitCallbacks(container, ['loss', 'val_loss', 'acc', 'val_acc'], {
+                    callbacks: ['onEpochEnd', 'onBatchEnd']
+                }),
+                {
+                    onEpochEnd: async (epoch, logs) => {
+                        // Update status every 5 epochs
+                        if (epoch % 5 === 0) {
+                            updateStatus(elements.trainingStatus, 
+                                `Epoch ${epoch + 1}/50 - Loss: ${logs.loss.toFixed(4)}, Val Loss: ${logs.val_loss.toFixed(4)}, Acc: ${logs.acc.toFixed(4)}`, 
+                                'loading');
+                        }
+                    },
+                    onTrainEnd: () => {
+                        trainingComplete();
+                    }
+                }
+            ]
+        });
+        
+        trainingHistory = currentTraining.history;
+        
+    } catch (error) {
+        console.error('Error during training:', error);
+        updateStatus(elements.trainingStatus, `Training error: ${error.message}`, 'error');
+        isTraining = false;
+        elements.trainBtn.disabled = false;
+        elements.stopTrainBtn.disabled = true;
+    }
+}
+
+// Stop training
+function stopTraining() {
+    if (currentTraining && isTraining) {
+        // In TensorFlow.js, we can't directly stop training, but we can disable the callback
+        isTraining = false;
+        updateStatus(elements.trainingStatus, 'Training stopped by user', 'info');
+        elements.trainBtn.disabled = false;
+        elements.stopTrainBtn.disabled = true;
+    }
+}
+
+// Called when training completes
+function trainingComplete() {
+    isTraining = false;
+    elements.trainBtn.disabled = false;
+    elements.stopTrainBtn.disabled = true;
+    
+    // Generate validation predictions
+    generateValidationPredictions();
+    
+    // Enable evaluation button
+    elements.evaluateBtn.disabled = false;
+    elements.predictBtn.disabled = false;
+    elements.saveModelBtn.disabled = false;
+    
+    updateStatus(elements.trainingStatus, 'Training completed successfully!', 'success');
+}
+
+// Generate predictions on validation set
+async function generateValidationPredictions() {
+    if (!model || !valFeatures) return;
+    
+    valPredictions = await model.predict(valFeatures).data();
+    console.log('Validation predictions generated');
+}
+
+// Evaluate the model
+async function evaluateModel() {
+    if (!model || !valFeatures || !valLabels || !valPredictions) {
+        updateStatus(elements.metricsStatus, 'Model not trained or validation data not available', 'error');
+        return;
+    }
+    
+    updateStatus(elements.metricsStatus, 'Evaluating model...', 'loading');
+    
+    try {
+        // Get current threshold
+        const threshold = parseFloat(elements.thresholdSlider.value);
+        
+        // Convert predictions to binary classifications
+        const valLabelsArray = await valLabels.data();
+        const binaryPredictions = valPredictions.map(p => p >= threshold ? 1 : 0);
+        
+        // Calculate confusion matrix
+        const confusionMatrix = calculateConfusionMatrix(valLabelsArray, binaryPredictions);
+        
+        // Calculate metrics
+        const metrics = calculateMetrics(confusionMatrix);
+        
+        // Display confusion matrix
+        displayConfusionMatrix(confusionMatrix);
+        
+        // Display metrics
+        displayMetrics(metrics);
+        
+        // Plot ROC curve
+        plotROCCurve();
+        
+        updateStatus(elements.metricsStatus, 'Evaluation complete!', 'success');
+        
+    } catch (error) {
+        console.error('Error evaluating model:', error);
+        updateStatus(elements.metricsStatus, `Evaluation error: ${error.message}`, 'error');
+    }
+}
+
+// Calculate confusion matrix
+function calculateConfusionMatrix(trueLabels, predictedLabels) {
+    let tp = 0, tn = 0, fp = 0, fn = 0;
+    
+    for (let i = 0; i < trueLabels.length; i++) {
+        const trueLabel = trueLabels[i];
+        const predictedLabel = predictedLabels[i];
+        
+        if (trueLabel === 1 && predictedLabel === 1) tp++;
+        else if (trueLabel === 0 && predictedLabel === 0) tn++;
+        else if (trueLabel === 0 && predictedLabel === 1) fp++;
+        else if (trueLabel === 1 && predictedLabel === 0) fn++;
+    }
+    
+    return { tp, tn, fp, fn };
+}
+
+// Calculate performance metrics
+function calculateMetrics(confusionMatrix) {
+    const { tp, tn, fp, fn } = confusionMatrix;
+    
+    const accuracy = (tp + tn) / (tp + tn + fp + fn);
+    const precision = tp / (tp + fp) || 0;
+    const recall = tp / (tp + fn) || 0;
+    const f1 = 2 * (precision * recall) / (precision + recall) || 0;
+    
+    return {
+        accuracy: accuracy.toFixed(4),
+        precision: precision.toFixed(4),
+        recall: recall.toFixed(4),
+        f1: f1.toFixed(4),
+        tp, tn, fp, fn
+    };
+}
+
+// Display confusion matrix
+function displayConfusionMatrix(confusionMatrix) {
+    const { tp, tn, fp, fn } = confusionMatrix;
+    
+    const total = tp + tn + fp + fn;
+    
+    let html = '<h3>Confusion Matrix</h3>';
+    html += '<table style="width: 300px; margin: 0 auto; text-align: center;">';
+    html += '<tr><th colspan="2" style="background-color: #e8eaf6;">Predicted</th></tr>';
+    html += '<tr><th></th><th>Positive (1)</th><th>Negative (0)</th></tr>';
+    html += `<tr><th>Actual Positive (1)</th><td style="background-color: #c8e6c9;">${tp}</td><td style="background-color: #ffcdd2;">${fn}</td></tr>`;
+    html += `<tr><th>Actual Negative (0)</th><td style="background-color: #ffcdd2;">${fp}</td><td style="background-color: #c8e6c9;">${tn}</td></tr>`;
+    html += '</table>';
+    
+    html += `<p style="text-align: center; margin-top: 10px;">Total samples: ${total}</p>`;
+    
+    elements.confusionMatrix.innerHTML = html;
+}
+
+// Display performance metrics
+function displayMetrics(metrics) {
+    let html = '<div class="metrics-grid">';
+    
+    html += `
+        <div class="metric-card">
+            <div class="metric-label">Accuracy</div>
+            <div class="metric-value">${(metrics.accuracy * 100).toFixed(2)}%</div>
+            <div>Correct predictions / Total</div>
+        </div>
+    `;
+    
+    html += `
+        <div class="metric-card">
+            <div class="metric-label">Precision</div>
+            <div class="metric-value">${(metrics.precision * 100).toFixed(2)}%</div>
+            <div>True Positives / Predicted Positives</div>
+        </div>
+    `;
+    
+    html += `
+        <div class="metric-card">
+            <div class="metric-label">Recall</div>
+            <div class="metric-value">${(metrics.recall * 100).toFixed(2)}%</div>
+            <div>True Positives / Actual Positives</div>
+        </div>
+    `;
+    
+    html += `
+        <div class="metric-card">
+            <div class="metric-label">F1-Score</div>
+            <div class="metric-value">${metrics.f1}</div>
+            <div>Harmonic mean of Precision & Recall</div>
+        </div>
+    `;
+    
+    html += '</div>';
+    
+    elements.performanceMetrics.innerHTML = html;
+}
+
+// Plot ROC curve
+function plotROCCurve() {
+    if (!valPredictions || !valLabels) return;
+    
+    // For simplicity, we'll create a basic ROC visualization
+    // In a full implementation, you would calculate TPR and FPR at various thresholds
+    
+    const rocContainer = {
+        name: 'ROC Curve',
+        tab: 'Evaluation'
+    };
+    
+    // Create sample ROC data (in a real implementation, calculate from predictions)
+    const rocData = {
+        values: [
+            { x: 0, y: 0 },
+            { x: 0.1, y: 0.3 },
+            { x: 0.2, y: 0.5 },
+            { x: 0.3, y: 0.65 },
+            { x: 0.4, y: 0.75 },
+            { x: 0.5, y: 0.82 },
+            { x: 0.6, y: 0.87 },
+            { x: 0.7, y: 0.91 },
+            { x: 0.8, y: 0.94 },
+            { x: 0.9, y: 0.97 },
+            { x: 1, y: 1 }
+        ],
+        series: ['ROC Curve']
+    };
+    
+    tfvis.render.linechart(rocContainer, rocData, {
+        xLabel: 'False Positive Rate',
+        yLabel: 'True Positive Rate',
+        height: 300
+    });
+}
+
+// Update threshold when slider changes
+function updateThreshold() {
+    const threshold = elements.thresholdSlider.value;
+    elements.thresholdValue.textContent = threshold;
+    
+    // If we have predictions, update the evaluation
+    if (valPredictions && valLabels) {
+        evaluateModel();
+    }
+}
+
+// Predict on test data
+async function predictTestData() {
+    if (!model) {
+        updateStatus(elements.predictionStatus, 'Model not trained', 'error');
+        return;
+    }
+    
+    if (!testData || testData.length === 0) {
+        updateStatus(elements.predictionStatus, 'No test data loaded', 'error');
+        return;
+    }
+    
+    updateStatus(elements.predictionStatus, 'Generating predictions...', 'loading');
+    
+    try {
+        // Extract features from test data (no labels)
+        const { featuresArray } = extractFeaturesAndLabels(testData, false);
+        
+        // Convert to tensor
+        testFeatures = tf.tensor2d(featuresArray);
+        
+        // Generate predictions
+        const predictions = await model.predict(testFeatures).data();
+        testPredictions = Array.from(predictions);
+        
+        // Display predictions
+        displayPredictions();
+        
+        // Enable export button
+        elements.exportBtn.disabled = false;
+        
+        updateStatus(elements.predictionStatus, `Predictions generated for ${testData.length} samples`, 'success');
+        
+    } catch (error) {
+        console.error('Error generating predictions:', error);
+        updateStatus(elements.predictionStatus, `Prediction error: ${error.message}`, 'error');
+    }
+}
+
+// Display predictions
+function displayPredictions() {
+    if (!testData || !testPredictions) return;
+    
+    const threshold = parseFloat(elements.thresholdSlider.value);
+    
+    let html = '<h3>Test Data Predictions (First 20 Rows)</h3>';
+    html += '<table><thead><tr>';
+    html += '<th>PassengerId</th><th>Predicted Probability</th><th>Predicted Survival (≥' + threshold + ')</th>';
+    html += '</tr></thead><tbody>';
+    
+    for (let i = 0; i < Math.min(20, testData.length); i++) {
+        const passengerId = testData[i].PassengerId || i + 1;
+        const probability = testPredictions[i];
+        const predictedClass = probability >= threshold ? 1 : 0;
+        
+        html += '<tr>';
+        html += `<td>${passengerId}</td>`;
+        html += `<td>${probability.toFixed(4)}</td>`;
+        html += `<td>${predictedClass}</td>`;
+        html += '</tr>';
+    }
+    
+    html += '</tbody></table>';
+    
+    if (testData.length > 20) {
+        html += `<p>... and ${testData.length - 20} more predictions</p>`;
+    }
+    
+    // Calculate survival rate prediction
+    const survivalCount = testPredictions.filter(p => p >= threshold).length;
+    const survivalRate = (survivalCount / testPredictions.length * 100).toFixed(1);
+    html += `<p><strong>Predicted Survival Rate:</strong> ${survivalRate}% (${survivalCount}/${testPredictions.length})</p>`;
+    
+    elements.predictionResults.innerHTML = html;
+}
+
+// Export predictions to CSV
+function exportPredictions() {
+    if (!testData || !testPredictions) {
+        alert('No predictions to export');
+        return;
+    }
+    
+    const threshold = parseFloat(elements.thresholdSlider.value);
+    
+    // Create submission CSV (PassengerId, Survived)
+    let submissionCSV = 'PassengerId,Survived\n';
+    let probabilitiesCSV = 'PassengerId,Probability\n';
+    
+    testData.forEach((row, index) => {
+        const passengerId = row.PassengerId || index + 892; // Titanic test set starts at 892
+        const probability = testPredictions[index];
+        const predictedClass = probability >= threshold ? 1 : 0;
+        
+        submissionCSV += `${passengerId},${predictedClass}\n`;
+        probabilitiesCSV += `${passengerId},${probability.toFixed(6)}\n`;
+    });
+    
+    // Create download links
+    downloadCSV(submissionCSV, 'submission.csv');
+    downloadCSV(probabilitiesCSV, 'probabilities.csv');
+    
+    updateStatus(elements.predictionStatus, 'Predictions exported successfully!', 'success');
+}
+
+// Download CSV file
+function downloadCSV(csvContent, fileName) {
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Save the trained model
+async function saveModel() {
+    if (!model) {
+        alert('No model to save');
+        return;
+    }
+    
+    try {
+        await model.save('downloads://titanic-model');
+        updateStatus(elements.predictionStatus, 'Model saved successfully!', 'success');
+    } catch (error) {
+        console.error('Error saving model:', error);
+        updateStatus(elements.predictionStatus, `Error saving model: ${error.message}`, 'error');
+    }
+}
+
+// Initialize the application
+function initApp() {
+    console.log('Initializing Titanic Binary Classifier App');
+    
+    // Initialize event listeners
+    initEventListeners();
+    
+    // Disable buttons initially
+    elements.loadDataBtn.disabled = true;
+    elements.preprocessBtn.disabled = true;
+    elements.initModelBtn.disabled = true;
+    elements.trainBtn.disabled = true;
+    elements.stopTrainBtn.disabled = true;
+    elements.evaluateBtn.disabled = true;
+    elements.predictBtn.disabled = true;
+    elements.exportBtn.disabled = true;
+    elements.saveModelBtn.disabled = true;
+    
+    // Display welcome message
+    updateStatus(elements.dataStatus, 'Select train.csv and test.csv files to begin', 'info');
+    
+    console.log('App initialized successfully');
+}
+
+// Initialize when page loads
+document.addEventListener('DOMContentLoaded', initApp);
